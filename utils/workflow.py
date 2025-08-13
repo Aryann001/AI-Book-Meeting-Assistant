@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.prebuilt import ToolNode
 from langchain_tavily import TavilySearch
-import aiosqlite # Use the async version of sqlite
+import aiosqlite  # Use the async version of sqlite
 
 from utils.database_operations import find_portfolio_data
 from utils.meeting_tools import (
@@ -26,32 +26,58 @@ load_dotenv()
 
 # --- Define Components (but don't initialize async parts) ---
 
+
 # ✅ --- Graph State ---
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
+
 # ✅ --- Tools and LLM ---
 search_tool = TavilySearch(max_results=1)
 tools = [
-    check_slot_availability, book_meeting_tool, verify_meeting_tool,
-    decline_meeting_tool, validate_email_tool, search_tool,
-    get_client_details_tool, is_user_exist_tool, reschedule_tool,
+    check_slot_availability,
+    book_meeting_tool,
+    verify_meeting_tool,
+    decline_meeting_tool,
+    validate_email_tool,
+    search_tool,
+    get_client_details_tool,
+    is_user_exist_tool,
+    reschedule_tool,
 ]
-llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.5).bind_tools(tools=tools)
+llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.5).bind_tools(
+    tools=tools
+)
+
 
 # ✅ --- System Prompt Definition ---
 def get_system_prompt():
     user, projects, meetings = find_portfolio_data()
     if not user and not projects:
         print("⚠️ WARNING: No user or project data found in the database.")
-    
+
     user_context = "No user data found in the database."
     if user:
-        user_context = f"Name: {user.get('name', 'N/A')}\nTitle: {user.get('title', 'N/A')}\nDescription: {user.get('description', 'N/A')}\nStack: {', '.join(user.get('stack', []))}"
+        # Get the list of stack objects, or an empty list if it doesn't exist
+        stack_list = user.get("stack", [])
+
+        # Use a list comprehension to pull the 'description' string from each object
+        stack_descriptions = [item.get("description", "N/A") for item in stack_list]
+
+        # Now, join the list of strings
+        stack_str = ", ".join(stack_descriptions)
+
+        # Build the final context string
+        user_context = f"Name: {user.get('name', 'N/A')}\nTitle: {user.get('title', 'N/A')}\nDescription: {user.get('description', 'N/A')}\nStack: {stack_str}"
 
     projects_context = "No projects found in the database."
     if projects:
-        projects_context = "\n".join([f"- {p.get('title', 'Untitled')}: {p.get('description', 'No description')}" for p in projects])
+        projects_context = "\n".join(
+            [
+                f"- {p.get('title', 'Untitled')}: {p.get('description', 'No description')}"
+                for p in projects
+            ]
+        )
 
     full_context = f"USER DATA:\n{user_context}\n\nPROJECTS:\n{projects_context}"
 
@@ -103,13 +129,16 @@ When a user wants to book or reschedule, you MUST follow this sequence precisely
 - **CRITICAL RULE:** DO NOT suggest booking or rescheduling again. If the user asks, remind them they already have a confirmed meeting.
 """
 
+
 # --- Graph Definition ---
 def build_graph():
     agent_system_prompt = get_system_prompt()
-    agent_system_template = ChatPromptTemplate.from_messages([
-        ("system", agent_system_prompt),
-        MessagesPlaceholder(variable_name="messages"),
-    ])
+    agent_system_template = ChatPromptTemplate.from_messages(
+        [
+            ("system", agent_system_prompt),
+            MessagesPlaceholder(variable_name="messages"),
+        ]
+    )
     agent = agent_system_template | llm
 
     async def agent_node(state: AgentState):
@@ -133,13 +162,14 @@ def build_graph():
     graph.add_edge("tools", "agent")
     return graph
 
+
 # --- ASYNC INITIALIZATION FUNCTION ---
 # This function will be called from our async controller to create the app instance.
 async def get_app(conn: aiosqlite.Connection):
     checkpointer = AsyncSqliteSaver(conn=conn)
-    
+
     graph = build_graph()
-    
+
     # Compile the graph with the async checkpointer
     app = graph.compile(checkpointer=checkpointer)
     return app
